@@ -1,4 +1,4 @@
-"""Painel público do projeto Vendaval — o percurso da análise, do problema ao resultado."""
+"""Painel público da Base Vendaval — a trilha de interpolação, do mecanismo ao teto."""
 
 from pathlib import Path
 
@@ -11,45 +11,18 @@ RAIZ = Path(__file__).resolve().parent.parent
 FIGURAS = RAIZ / "figuras"
 DADOS = RAIZ / "dados"
 
-st.set_page_config(page_title="Vendaval — correção de rajada de vento", page_icon="🌬️", layout="wide")
-
-
-# ---------------------------------------------------------------- utilidades
+st.set_page_config(page_title="Base Vendaval — interpolação de extremos", page_icon="🌬️", layout="wide")
 
 
 @st.cache_data
-def carregar_csv(nome: str) -> pd.DataFrame:
+def carregar(nome: str) -> pd.DataFrame:
     return pd.read_csv(DADOS / nome)
 
 
-@st.cache_data
-def metricas_por_versao(percentil: str) -> pd.DataFrame:
-    """Erro de cada versão do campo contra a estação, calculado na hora."""
-    dados = carregar_csv("scatter_p95_p99_dados.csv")
-    alvo = f"inmet_{percentil}"
-    linhas = []
-    for nome, coluna in VERSOES.items():
-        recorte = dados[[alvo, f"{coluna}_{percentil}"]].dropna()
-        erro = recorte[f"{coluna}_{percentil}"] - recorte[alvo]
-        linhas.append(
-            {
-                "Versão": nome,
-                "Viés": round(erro.mean(), 2),
-                "EAM": round(erro.abs().mean(), 2),
-                "REQM": round((erro**2).mean() ** 0.5, 2),
-                "n": len(recorte),
-            }
-        )
-    return pd.DataFrame(linhas)
-
-
-VERSOES = {"ERA5 original": "era_orig", "V2 — IDW": "v2", "V3 — Gaussiano": "v3"}
-
-
-def fig(nome: str, legenda: str = "", largura: str = "stretch") -> None:
+def fig(nome: str, legenda: str = "") -> None:
     caminho = FIGURAS / nome
     if caminho.exists():
-        st.image(str(caminho), caption=legenda or None, width=largura)
+        st.image(str(caminho), caption=legenda or None, width="stretch")
 
 
 def secao(numero: str, titulo: str, pergunta: str) -> None:
@@ -57,18 +30,34 @@ def secao(numero: str, titulo: str, pergunta: str) -> None:
     st.caption(pergunta)
 
 
-def achado(texto: str) -> None:
-    st.success(texto, icon="✅")
+# Ordem de produção, não ordem de qualidade. Fonte: registro de versões do projeto.
+VERSOES = [
+    ("V1", "Magnitude apenas", "Legado",
+     "Resíduo interpolado por IDW somado à magnitude bruta do ERA5. Sem tratar direção do vento."),
+    ("V2", "IDW p=2, k=15", "Baseline de produção antigo",
+     "IDW clássico (peso 1/d²) nos resíduos, mais interpolação da direção do vento. "
+     "Com p=2 o peso cai rápido demais: o campo vira um mosaico quase-constante em torno de cada estação."),
+    ("V3", "Gaussiano σ=2,0°, k=15", "Tentativa de corrigir a V2",
+     "Troca o peso IDW por kernel gaussiano. Resolveu a transição abrupta, mas perdeu extremos — "
+     "σ=2,0° é 13× o default do próprio código."),
+    ("V4", "Brown-Resnick calibrado", "Kernel recalibrado",
+     "Mesmo mecanismo, com peso calibrado pela escala de dependência medida e distância geodésica "
+     "(corrige a distorção de calcular distância direto em graus). Mantém a limitação estrutural."),
+    ("V5", "Kriging Ordinário, grid 0,1°", "Candidato de produção",
+     "Resolve um sistema linear com todas as estações simultaneamente, em vez de k vizinhos fixos, "
+     "num grid ~6× mais fino. Sai da família de combinação convexa de peso fixo."),
+]
 
-
-# ---------------------------------------------------------------- cabeçalho
-
-st.title("🌬️ Vendaval")
+st.title("🌬️ Base Vendaval")
 st.markdown(
-    "**Correção da rajada máxima de vento da reanálise ERA5 usando as estações do INMET.** "
-    "A reanálise cobre o país inteiro em grade regular, mas suaviza o extremo. "
-    "As estações medem o extremo de verdade, só que em pontos esparsos. "
-    "O projeto usa as estações para corrigir a grade."
+    "**Correção da rajada máxima de vento do ERA5 usando as estações do INMET.** "
+    "A reanálise cobre o país inteiro em grade regular, mas suaviza o extremo, porque cada célula é "
+    "uma média de área. As estações medem o extremo real, em pontos esparsos."
+)
+st.info(
+    "Este painel cobre a **trilha de interpolação**: como espalhar a correção das estações para a grade, "
+    "e como as versões dessa etapa foram testadas entre si. A trilha de IA é um trabalho separado.",
+    icon="🧭",
 )
 
 with st.expander("📁 Onde ficam os dados e o código"):
@@ -77,7 +66,7 @@ with st.expander("📁 Onde ficam os dados e o código"):
 | | Onde |
 | --- | --- |
 | Dados do projeto | Máquina 3 do cluster de pesquisa, em `/home/publico/vendaval/` |
-| Catálogo por arquivo | `docs/MAPA_DADOS.md`, no mesmo diretório — o que é cada dado, qual script gerou e de qual dado nasceu |
+| Catálogo por arquivo | `docs/MAPA_DADOS.md`, no mesmo diretório |
 | Mapa de pastas | `docs/MAPA_DIRETORIOS.md`, no mesmo diretório |
 | Código do pipeline | Repositório `Base Vendaval`, no Azure DevOps |
 
@@ -89,293 +78,250 @@ st.divider()
 
 abas = st.tabs(
     [
-        "1 · O problema",
-        "2 · Os dados",
-        "3 · O que explica a rajada",
-        "4 · Os modelos",
-        "5 · Do ponto à grade",
-        "6 · O resultado",
+        "1 · O mecanismo",
+        "2 · As versões",
+        "3 · O teto estrutural",
+        "4 · A régua: LOOCV",
+        "5 · Para onde foi",
         "Acervo",
     ]
 )
 
 
-# ---------------------------------------------------------------- 1. problema
+# ---------------------------------------------------------------- 1. mecanismo
 
 with abas[0]:
-    secao("1", "O problema", "A reanálise erra a rajada? Onde exatamente?")
+    secao("1", "O mecanismo", "Como se corrige uma grade usando pontos esparsos?")
 
-    esquerda, direita = st.columns([3, 2])
+    esquerda, direita = st.columns([2, 3])
     with esquerda:
-        fig("01_exploracao/boxplot_gusts_comparison.png")
-    with direita:
         st.markdown(
-            "As duas distribuições têm **mediana quase igual**. A diferença está na cauda: "
-            "a estação registra rajadas bem acima do teto que a reanálise alcança.\n\n"
-            "Ou seja, o ERA5 acerta o vento típico e erra justamente o evento raro — "
-            "que é o que interessa em análise de vendaval."
+            """
+Três passos, iguais em **todas** as versões:
+
+1. **Resíduo por estação** — `r = rajada_INMET − rajada_ERA5`
+2. **Interpolar** o campo de resíduos para a grade inteira
+3. **Somar** de volta — `corrigido(x) = ERA5(x) + r̂(x)`
+
+O passo 1 e o 3 nunca mudaram. **O que distingue uma versão da outra é
+exclusivamente o passo 2** — e é nele que mora todo este painel.
+            """
         )
-        tabela = metricas_por_versao("p99")
-        vies_era5 = tabela.loc[tabela["Versão"] == "ERA5 original", "Viés"].iloc[0]
-        vies_p95 = metricas_por_versao("p95").loc[lambda t: t["Versão"] == "ERA5 original", "Viés"].iloc[0]
-        achado(
-            f"Medido sobre {int(tabela['n'].iloc[0])} estações: o ERA5 subestima o p95 em "
-            f"{abs(vies_p95):.2f} m/s e o p99 em {abs(vies_era5):.2f} m/s. "
-            "Quanto mais extremo o quantil, maior o erro."
+    with direita:
+        fig("01_exploracao/boxplot_gusts_comparison.png")
+        st.caption(
+            "Por que corrigir: as medianas quase coincidem, mas a estação registra rajadas "
+            "muito acima do teto que a reanálise alcança. O erro está na cauda."
         )
 
-    st.caption("É esse buraco na cauda que o resto do projeto tenta fechar.")
+    st.divider()
+    coluna_a, coluna_b = st.columns(2)
+    with coluna_a:
+        fig("01_exploracao/inmet_stations_map.png")
+        st.caption("A rede de estações: é daqui que sai o resíduo a ser espalhado.")
+    with coluna_b:
+        fig("01_exploracao/map_station_max_gusts.png")
+        st.caption("Rajada máxima observada por estação.")
 
 
-# ---------------------------------------------------------------- 2. dados
+# ---------------------------------------------------------------- 2. versões
 
 with abas[1]:
-    secao("2", "Os dados", "O que entra no pipeline, e com que cobertura?")
+    secao("2", "As versões", "O que cada versão mudou no passo de interpolação?")
 
-    esquerda, direita = st.columns(2)
-    with esquerda:
-        fig("01_exploracao/inmet_stations_map.png")
-        st.caption("Estações automáticas do INMET sobre a malha do ERA5 — a referência observada.")
-    with direita:
-        fig("01_exploracao/map_station_max_gusts.png")
-        st.caption("Rajada máxima registrada por estação. Define o alvo que o modelo precisa reproduzir.")
-
-    st.markdown(
-        "**A assimetria que define o método:** a reanálise é contínua e cobre tudo; "
-        "a observação é pontual e esparsa. Corrigir significa aprender o erro onde há estação "
-        "e propagar esse aprendizado para onde não há — o que vira o problema da seção 5."
-    )
-
-
-# ---------------------------------------------------------------- 3. covariáveis
-
-with abas[2]:
-    secao("3", "O que explica a rajada", "Quais variáveis carregam informação sobre o erro?")
-
-    st.markdown(
-        "Antes de treinar qualquer modelo, é preciso saber quais covariáveis meteorológicas "
-        "têm relação real com a rajada observada. Duas leituras independentes:"
-    )
-
-    esquerda, direita = st.columns(2)
-    with esquerda:
-        st.markdown("**Correlação clássica**")
-        fig("01_exploracao/heatmap_correlation.png")
-        st.caption("Correlação entre as covariáveis candidatas — revela redundância entre elas.")
-    with direita:
-        st.markdown("**Dependência preditiva (PREDEP)**")
-        st.caption(
-            "Mede o quanto conhecer a rajada reduz a incerteza sobre a covariável. "
-            "Captura relação não linear, que a correlação linear perde."
-        )
-        ranking = carregar_csv("predep_correlations_results.csv")
-        estacao = st.selectbox("Estação", sorted(ranking["Station"].unique()), key="predep_estacao")
-        recorte = ranking[ranking["Station"] == estacao].sort_values("PREDEP")
-        grafico = px.bar(
-            recorte,
-            x="PREDEP",
-            y="Feature",
-            orientation="h",
-            height=max(340, 24 * len(recorte)),
-            labels={"PREDEP": "Dependência preditiva", "Feature": ""},
-        )
-        grafico.update_layout(margin=dict(l=0, r=0, t=10, b=0))
-        st.plotly_chart(grafico, width="stretch", config={"responsive": True})
-
-    primeiras = (
-        ranking.sort_values("PREDEP", ascending=False).groupby("Station").head(1)["Feature"].tolist()
-    )
-    achado(
-        "Em todas as estações avaliadas a primeira colocada é vento ou precipitação "
-        f"({', '.join(sorted(set(primeiras)))}) — nenhuma variável termodinâmica chega ao topo."
-    )
-
-    with st.expander("Tabela completa do ranking"):
-        st.dataframe(
-            ranking[ranking["Station"] == estacao]
-            .sort_values("PREDEP", ascending=False)[["Feature", "PREDEP", "Pearson", "Spearman", "N_samples"]],
-            hide_index=True,
-            width="stretch",
-        )
-
-
-# ---------------------------------------------------------------- 4. modelos
-
-with abas[3]:
-    secao("4", "Os modelos", "Qual família de modelo reproduz melhor a rajada observada?")
-
-    st.markdown(
-        "Três famílias treinadas **por estação**, não um modelo único nacional: regressão linear "
-        "regularizada, floresta aleatória e regressão quantílica. A quantílica entra porque o alvo "
-        "é um extremo — ajustar a média não garante ajustar a cauda."
-    )
-
-    familias = {
-        "Linear e floresta aleatória": FIGURAS / "04_correcao/regressao",
-        "Regressão quantílica": FIGURAS / "04_correcao/quantilica",
-    }
-    diagnosticos = {
-        "scatter": "Previsto × observado",
-        "residuals": "Resíduos",
-        "importance": "Importância das variáveis",
-        "multi": "Múltiplos quantis",
-    }
-
-    coluna_a, coluna_b, coluna_c = st.columns(3)
-    familia = coluna_a.selectbox("Família", list(familias), key="mod_familia")
-    pasta = familias[familia]
-    arquivos = sorted(pasta.glob("*.png"))
-
-    disponiveis = {p: r for p, r in diagnosticos.items() if any(a.stem.startswith(p) for a in arquivos)}
-    estacao_modelo = coluna_b.selectbox(
-        "Estação", sorted({a.stem.split("_")[-1] for a in arquivos}), key="mod_estacao"
-    )
-    rotulo = coluna_c.selectbox("Diagnóstico", list(disponiveis.values()), key="mod_diag")
-    prefixo = [p for p, r in disponiveis.items() if r == rotulo][0]
-
-    selecionados = [a for a in arquivos if a.stem.startswith(prefixo) and a.stem.endswith(estacao_modelo)]
-    colunas = st.columns(min(2, len(selecionados)) or 1)
-    for coluna, arquivo in zip(colunas, selecionados):
-        coluna.image(str(arquivo), caption=arquivo.stem.replace("_", " "), width="stretch")
+    for sigla, metodo, status, descricao in VERSOES:
+        with st.container(border=True):
+            topo, corpo = st.columns([1, 5])
+            topo.markdown(f"### {sigla}")
+            topo.caption(status)
+            corpo.markdown(f"**{metodo}**  \n{descricao}")
 
     st.caption(
-        "Ler o *previsto × observado*: pontos abaixo da diagonal são eventos que o modelo "
-        "subestimou. A dispersão cresce nos valores altos — o extremo continua sendo a parte difícil."
-    )
-
-
-# ---------------------------------------------------------------- 5. ponto → grade
-
-with abas[4]:
-    secao("5", "Do ponto à grade", "A correção nasce nas estações. Como virar campo contínuo sem inventar estrutura?")
-
-    st.markdown(
-        "Aplicar a correção só onde há estação cria **ilhas**: cada estação vira um ponto quente "
-        "cercado de grade não corrigida. A saída é interpolar — e a pergunta passa a ser **quanto** suavizar."
-    )
-
-    fig("03_comparacao/dome_200km_p99.png")
-    st.caption(
-        "Recorte de 200 km ao redor de uma estação (★). Sem suavização, a correção fica concentrada; "
-        "IDW e kernel gaussiano espalham o efeito. Os dois últimos painéis mostram o que cada método mudou."
+        "A numeração é ordem de produção, não de qualidade — a seção 4 mostra que a ordem "
+        "de desempenho é outra."
     )
 
     st.divider()
-    st.markdown("**O trade-off, explícito:**")
-    fig("03_comparacao/tune_sigma_grid.png")
-    st.caption(
-        "Varredura da largura do kernel gaussiano. À esquerda, detalhe local preservado e transições abruptas. "
-        "À direita, o campo é achatado e a informação da estação se dissolve num alcance de centenas de quilômetros."
-    )
-
-    achado(
-        "Suavizar demais não é um defeito estético — apaga a correção. É o que a seção 6 mede."
-    )
-
-    with st.expander("Efeito em escala nacional"):
-        fig("03_comparacao/compare_quantis_3x2.png")
-        st.caption("V2 base e as duas suavizações, em p95 e p99, sobre o Brasil inteiro.")
+    esquerda, direita = st.columns(2)
+    with esquerda:
+        fig("03_comparacao/v1_vs_v2_maps.png")
+        st.caption("V1 e V2 lado a lado.")
+    with direita:
+        fig("03_comparacao/v3_diffs_p99.png")
+        st.caption("O que a V3 mudou em relação à referência, no p99.")
 
 
-# ---------------------------------------------------------------- 6. resultado
+# ---------------------------------------------------------------- 3. teto
 
-with abas[5]:
-    secao("6", "O resultado", "A correção funcionou? De quanto foi o ganho?")
-
-    percentil = st.radio("Percentil", ["p95", "p99"], horizontal=True, key="res_percentil")
-    dados = carregar_csv("scatter_p95_p99_dados.csv")
-    alvo = f"inmet_{percentil}"
-
-    figura = go.Figure()
-    for nome, coluna in VERSOES.items():
-        recorte = dados[[alvo, f"{coluna}_{percentil}", "codigo_estacao"]].dropna()
-        figura.add_trace(
-            go.Scattergl(
-                x=recorte[alvo],
-                y=recorte[f"{coluna}_{percentil}"],
-                mode="markers",
-                name=nome,
-                marker=dict(size=5, opacity=0.55),
-                customdata=recorte["codigo_estacao"],
-                hovertemplate="%{customdata}<br>observado %{x:.1f}<br>campo %{y:.1f} m/s<extra></extra>",
-            )
-        )
-    limite = [
-        float(min(dados[alvo].min(), dados[[f"{c}_{percentil}" for c in VERSOES.values()]].min().min())),
-        float(max(dados[alvo].max(), dados[[f"{c}_{percentil}" for c in VERSOES.values()]].max().max())),
-    ]
-    figura.add_trace(
-        go.Scatter(x=limite, y=limite, mode="lines", name="acerto perfeito",
-                   line=dict(dash="dash", width=1, color="#888"), hoverinfo="skip")
-    )
-    figura.update_layout(
-        height=520,
-        xaxis_title=f"Observado na estação — {percentil} (m/s)",
-        yaxis_title=f"Campo — {percentil} (m/s)",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
-        margin=dict(l=10, r=10, t=10, b=10),
-    )
-    figura.update_xaxes(range=limite)
-    figura.update_yaxes(range=limite)
+with abas[2]:
+    secao("3", "O teto estrutural", "Por que V2, V3 e V4 nunca reproduzem um extremo local?")
 
     esquerda, direita = st.columns([3, 2])
     with esquerda:
-        st.plotly_chart(figura, width="stretch", config={"responsive": True})
+        st.markdown(
+            """
+Os três calculam o resíduo interpolado como **combinação convexa** dos vizinhos:
+
+$$\\hat{r}(x) = \\sum_j w_j(x)\\, r_j, \\qquad w_j \\ge 0, \\quad \\sum_j w_j = 1$$
+
+Toda combinação convexa obedece $\\min_j r_j \\le \\hat{r}(x) \\le \\max_j r_j$.
+
+Ou seja: **o valor interpolado nunca supera o maior resíduo entre os vizinhos usados** — e fica
+estritamente abaixo dele sempre que os vizinhos discordarem, que é exatamente o caso quando uma
+estação captura um evento extremo e as vizinhas não.
+
+Não é bug de implementação. É propriedade do mecanismo, e vale para qualquer peso — IDW,
+gaussiano ou Brown-Resnick.
+            """
+        )
     with direita:
-        tabela = metricas_por_versao(percentil)
-        st.dataframe(tabela, hide_index=True, width="stretch")
-        st.caption(
-            "Todos em m/s. EAM = erro absoluto médio, REQM = raiz do erro quadrático médio, "
-            "n = estações. Viés negativo = campo abaixo da estação."
+        st.warning(
+            "**A V3 agravou isso por parâmetro.** A escala de dependência espacial real, medida por "
+            "F-madograma sobre a série diária das estações, é de **~10 km** (R²≈0,98). A V3 rodou com "
+            "σ=2,0°, da ordem de **200 km** — cerca de 20× mais larga. Quanto mais larga a janela, "
+            "mais vizinhos discordantes entram na média e mais o extremo se dilui.",
+            icon="📏",
         )
 
-        v_era5 = tabela.loc[tabela["Versão"] == "ERA5 original", "Viés"].iloc[0]
-        v_v2 = tabela.loc[tabela["Versão"] == "V2 — IDW", "Viés"].iloc[0]
-        v_v3 = tabela.loc[tabela["Versão"] == "V3 — Gaussiano", "Viés"].iloc[0]
-        reducao = (1 - abs(v_v2) / abs(v_era5)) * 100
-        achado(
-            f"**V2 reduz o viés em {reducao:.0f}%** ({v_era5:+.2f} → {v_v2:+.2f} m/s), "
-            "com queda equivalente no erro absoluto."
-        )
-        st.error(
-            f"**V3 fica pior que o ponto de partida** ({v_v3:+.2f} m/s contra {v_era5:+.2f}). "
-            "O kernel largo da seção 5 dissolveu a correção — o campo volta a subestimar.",
-            icon="⚠️",
-        )
+    st.divider()
+    fig("03_comparacao/dome_200km_p99.png")
+    st.caption(
+        "Recorte de 200 km ao redor de uma estação (★). Sem suavização a correção fica concentrada; "
+        "IDW e kernel gaussiano espalham o efeito. Os dois últimos painéis mostram o que cada um mudou."
+    )
+
+    st.markdown("**O trade-off da largura, explícito:**")
+    fig("03_comparacao/tune_sigma_grid.png")
+    st.caption(
+        "Varredura da largura do kernel. À esquerda, detalhe local e transições abruptas. "
+        "À direita, o campo achata e a informação da estação se dissolve."
+    )
+
+
+# ---------------------------------------------------------------- 4. LOOCV
+
+with abas[3]:
+    secao("4", "A régua: LOOCV", "Qual método realmente prevê melhor onde não há estação?")
 
     st.markdown(
-        "**Leitura:** a correção por estação funciona; o que decide o resultado final é a etapa de "
-        "espacialização. V2 (IDW) preserva o ganho, V3 (gaussiano largo) o devolve."
+        "**Validação cruzada leave-one-station-out:** cada estação é removida, seu valor é predito "
+        "usando só as demais, e comparado ao observado. É a única régua que mede o que importa — "
+        "acertar onde *não* há medição."
+    )
+
+    metricas = carregar("loocv_consolidated_metrics.csv")
+    percentil = st.radio("Percentil", ["p99", "p95"], horizontal=True, key="loocv_pct")
+    recorte = metricas[metricas["pct"] == percentil].sort_values("rmse").reset_index(drop=True)
+
+    esquerda, direita = st.columns([3, 2])
+    with esquerda:
+        grafico = px.bar(
+            recorte.sort_values("rmse", ascending=False),
+            x="rmse",
+            y="method",
+            orientation="h",
+            color="bias",
+            color_continuous_scale="RdBu",
+            color_continuous_midpoint=0,
+            height=420,
+            labels={"rmse": "RMSE (m/s) — menor é melhor", "method": "", "bias": "Viés"},
+        )
+        grafico.update_layout(margin=dict(l=0, r=0, t=10, b=0))
+        st.plotly_chart(grafico, width="stretch", config={"responsive": True})
+    with direita:
+        exibir = recorte[["method", "bias", "rmse", "mae", "corr"]].copy()
+        exibir.columns = ["Método", "Viés", "RMSE", "MAE", "Corr"]
+        for coluna in ["Viés", "RMSE", "MAE", "Corr"]:
+            exibir[coluna] = exibir[coluna].round(2)
+        st.dataframe(exibir, hide_index=True, width="stretch")
+        st.caption(f"Todos em m/s, exceto correlação. N = {int(recorte['n'].iloc[0])} estações.")
+
+    producao = recorte[recorte["method"].str.startswith(("V2", "V3", "V4"))]
+    if not producao.empty:
+        piores = recorte.tail(len(recorte) // 2)["method"].tolist()
+        st.error(
+            f"**As versões de produção são as piores da lista.** V2, V3 e V4 aparecem com viés de "
+            f"{producao['bias'].min():.1f} a {producao['bias'].max():.1f} m/s — subestimando o extremo "
+            "por larga margem, exatamente o que a seção 3 prevê.",
+            icon="⚠️",
+        )
+    melhor = recorte.iloc[0]
+    st.success(
+        f"**{melhor['method']}** lidera entre os métodos rápidos (RMSE {melhor['rmse']:.2f} m/s, "
+        f"viés {melhor['bias']:+.2f}). Vale notar: é uma variante do próprio IDW, com o expoente "
+        "calibrado localmente em vez de fixo — parte do problema da V2 era o parâmetro, não o mecanismo.",
+        icon="✅",
+    )
+
+    with st.expander("Simulação condicional (MSP2) — melhor resultado, em subamostra de 62 estações"):
+        msp2 = carregar("msp2_loocv_fmadograma_p99.csv")
+        erro = msp2["predicted"] - msp2["observed"]
+        coluna_a, coluna_b, coluna_c = st.columns(3)
+        coluna_a.metric("Viés", f"{erro.mean():+.2f} m/s")
+        coluna_b.metric("RMSE", f"{(erro**2).mean()**0.5:.2f} m/s")
+        coluna_c.metric("Correlação", f"{msp2['predicted'].corr(msp2['observed']):.2f}")
+        dispersao = px.scatter(
+            msp2, x="observed", y="predicted", hover_name="codigo_estacao", height=380,
+            labels={"observed": "Observado (m/s)", "predicted": "Predito (m/s)"},
+        )
+        limite = [float(min(msp2["observed"].min(), msp2["predicted"].min())),
+                  float(max(msp2["observed"].max(), msp2["predicted"].max()))]
+        dispersao.add_shape(type="line", x0=limite[0], y0=limite[0], x1=limite[1], y1=limite[1],
+                            line=dict(dash="dash", color="#888", width=1))
+        dispersao.update_layout(margin=dict(l=0, r=0, t=10, b=0))
+        st.plotly_chart(dispersao, width="stretch", config={"responsive": True})
+        st.caption(
+            "Simulação Monte Carlo do processo max-estável completo, condicionando em várias estações "
+            "ao mesmo tempo. É o melhor resultado medido, mas custa minutos por ponto — serve como "
+            "ferramenta de auditoria pontual, não para gerar a grade histórica inteira."
+        )
+
+
+# ---------------------------------------------------------------- 5. destino
+
+with abas[4]:
+    secao("5", "Para onde foi", "O que essa trilha concluiu?")
+
+    st.markdown(
+        """
+Duas conclusões, uma metodológica e uma de rumo.
+
+**A interpolação por combinação convexa tem teto.** Recalibrar o kernel (V4) ou trocar o peso (V3)
+não resolve, porque o limite é do mecanismo, não do parâmetro. Os métodos que se saíram melhor são
+justamente os que saem dessa família: mirar o quantil diretamente, adaptar o expoente localmente,
+ou simular o processo extremal.
+
+**O rumo do projeto passou a ser a trilha de IA.** A base de IA desenvolvida em paralelo foi
+comparada contra a interpolação em pé de igualdade — mesmo recorte espacial, mesmo período fora da
+amostra de treino, e com validação cruzada real do lado da interpolação — e levou vantagem. É por
+isso que o trabalho seguiu por lá.
+        """
     )
     st.caption(
-        "Ressalva: são percentis históricos por estação, não erro evento a evento. "
-        "As estações usadas no ajuste também aparecem aqui."
+        "A comparação em pé de igualdade é deliberada: a versão de produção usa a rede nacional inteira "
+        "e o histórico completo, vantagem de informação que a base de IA não tinha. Por isso a régua "
+        "usou uma versão restrita ao mesmo domínio e período."
     )
 
 
 # ---------------------------------------------------------------- acervo
 
-with abas[6]:
-    st.subheader("Acervo completo")
-    st.caption("Todas as figuras produzidas pelo pipeline, inclusive as que não entraram no percurso acima.")
+with abas[5]:
+    st.subheader("Acervo")
+    st.caption("Figuras produzidas pelo pipeline, inclusive as que não entraram no percurso acima.")
 
     grupos = {
-        "Exploração — campos médios da reanálise": sorted(
-            p for p in (FIGURAS / "01_exploracao").glob("*_mean_map.png")
-        ),
+        "Comparação entre versões e ajuste": sorted((FIGURAS / "03_comparacao").glob("*.png")),
+        "Exploração — campos médios da reanálise": sorted((FIGURAS / "01_exploracao").glob("*_mean_map.png")),
         "Exploração — covariáveis por estação": sorted((FIGURAS / "01_exploracao").glob("map_covariate_*.png")),
         "Exploração — recorte de interesse": sorted((FIGURAS / "01_exploracao").glob("map_roi_*.png")),
         "Exploração — distribuições": sorted((FIGURAS / "01_exploracao").glob("boxplot_*.png"))
-        + sorted((FIGURAS / "01_exploracao").glob("pdf_*.png")),
-        "Baseline": sorted((FIGURAS / "02_baseline").glob("*.png")),
-        "Comparação entre versões e ajuste": sorted((FIGURAS / "03_comparacao").glob("*.png")),
-        "Diagnóstico dos modelos": sorted((FIGURAS / "04_correcao").rglob("*.png")),
-        "Ranking de preditores": sorted((FIGURAS / "05_predep").glob("*.png")),
+        + sorted((FIGURAS / "01_exploracao").glob("pdf_*.png"))
+        + sorted((FIGURAS / "01_exploracao").glob("heatmap_*.png")),
     }
-
-    # Um grupo por vez: o Streamlit desenha o conteúdo de expander mesmo fechado, e
-    # montar as 101 figuras de uma vez deixa a página pesada sem necessidade.
     grupos = {t: a for t, a in grupos.items() if a}
+
+    # Um grupo por vez: o Streamlit desenha conteúdo de expander mesmo fechado.
     escolhido = st.selectbox(
         "Grupo", list(grupos), format_func=lambda t: f"{t} ({len(grupos[t])})", key="acervo_grupo"
     )

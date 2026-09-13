@@ -1,19 +1,18 @@
-# Vendaval — painel público
+# Base Vendaval — painel público
 
-Correção de viés da rajada máxima de vento: reanálise ERA5 calibrada contra as
-estações automáticas do INMET.
+Correção da rajada máxima de vento do ERA5 usando as estações do INMET.
 
-O painel percorre a análise em seis seções — o problema, os dados, as covariáveis,
-os modelos, a espacialização e o resultado — cada uma respondendo a uma pergunta.
-As métricas de erro são calculadas na hora, a partir dos CSVs de resultado. O
-acervo completo de figuras fica numa aba à parte.
+Este painel cobre a **trilha de interpolação**: o mecanismo de correção por resíduo,
+as versões V1–V5 dessa etapa, o teto estrutural da combinação convexa e a comparação
+leave-one-station-out entre os métodos. A trilha de IA é um trabalho separado e não
+está aqui.
 
 ## Estrutura
 
 ```
 app/streamlit_app.py   painel
-figuras/               saídas do pipeline, por etapa
-dados/                 CSVs de resultado consultados pelo painel
+figuras/               saídas do pipeline
+dados/                 métricas LOOCV e resultados consultados pelo painel
 ```
 
 ## Rodar localmente
