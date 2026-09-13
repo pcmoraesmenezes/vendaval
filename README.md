@@ -1,12 +1,12 @@
 # Vendaval — painel público
 
-Vitrine de resultados do projeto de correção de viés da rajada máxima de vento:
-reanálise ERA5 calibrada contra as estações automáticas do INMET, com recorte de
-aprofundamento no Cluster 3 (Sul do Brasil).
+Correção de viés da rajada máxima de vento: reanálise ERA5 calibrada contra as
+estações automáticas do INMET.
 
-O painel reúne, num só lugar, as figuras já produzidas pelo pipeline e os dois
-conjuntos de resultado que valem consulta interativa (comparação das versões
-corrigidas por estação e ranking de preditores).
+O painel percorre a análise em seis seções — o problema, os dados, as covariáveis,
+os modelos, a espacialização e o resultado — cada uma respondendo a uma pergunta.
+As métricas de erro são calculadas na hora, a partir dos CSVs de resultado. O
+acervo completo de figuras fica numa aba à parte.
 
 ## Estrutura
 
