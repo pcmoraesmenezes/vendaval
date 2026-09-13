@@ -34,10 +34,10 @@ def metricas_por_versao(percentil: str) -> pd.DataFrame:
         linhas.append(
             {
                 "Versão": nome,
-                "Viés (m/s)": round(erro.mean(), 2),
-                "Erro absoluto médio (m/s)": round(erro.abs().mean(), 2),
-                "Raiz do erro quadrático (m/s)": round((erro**2).mean() ** 0.5, 2),
-                "Estações": len(recorte),
+                "Viés": round(erro.mean(), 2),
+                "EAM": round(erro.abs().mean(), 2),
+                "REQM": round((erro**2).mean() ** 0.5, 2),
+                "n": len(recorte),
             }
         )
     return pd.DataFrame(linhas)
@@ -116,10 +116,10 @@ with abas[0]:
             "que é o que interessa em análise de vendaval."
         )
         tabela = metricas_por_versao("p99")
-        vies_era5 = tabela.loc[tabela["Versão"] == "ERA5 original", "Viés (m/s)"].iloc[0]
-        vies_p95 = metricas_por_versao("p95").loc[lambda t: t["Versão"] == "ERA5 original", "Viés (m/s)"].iloc[0]
+        vies_era5 = tabela.loc[tabela["Versão"] == "ERA5 original", "Viés"].iloc[0]
+        vies_p95 = metricas_por_versao("p95").loc[lambda t: t["Versão"] == "ERA5 original", "Viés"].iloc[0]
         achado(
-            f"Medido sobre {int(tabela['Estações'].iloc[0])} estações: o ERA5 subestima o p95 em "
+            f"Medido sobre {int(tabela['n'].iloc[0])} estações: o ERA5 subestima o p95 em "
             f"{abs(vies_p95):.2f} m/s e o p99 em {abs(vies_era5):.2f} m/s. "
             "Quanto mais extremo o quantil, maior o erro."
         )
@@ -324,11 +324,14 @@ with abas[5]:
     with direita:
         tabela = metricas_por_versao(percentil)
         st.dataframe(tabela, hide_index=True, width="stretch")
-        st.caption("Viés negativo = campo abaixo da estação. Cada ponto do gráfico é uma estação.")
+        st.caption(
+            "Todos em m/s. EAM = erro absoluto médio, REQM = raiz do erro quadrático médio, "
+            "n = estações. Viés negativo = campo abaixo da estação."
+        )
 
-        v_era5 = tabela.loc[tabela["Versão"] == "ERA5 original", "Viés (m/s)"].iloc[0]
-        v_v2 = tabela.loc[tabela["Versão"] == "V2 — IDW", "Viés (m/s)"].iloc[0]
-        v_v3 = tabela.loc[tabela["Versão"] == "V3 — Gaussiano", "Viés (m/s)"].iloc[0]
+        v_era5 = tabela.loc[tabela["Versão"] == "ERA5 original", "Viés"].iloc[0]
+        v_v2 = tabela.loc[tabela["Versão"] == "V2 — IDW", "Viés"].iloc[0]
+        v_v3 = tabela.loc[tabela["Versão"] == "V3 — Gaussiano", "Viés"].iloc[0]
         reducao = (1 - abs(v_v2) / abs(v_era5)) * 100
         achado(
             f"**V2 reduz o viés em {reducao:.0f}%** ({v_era5:+.2f} → {v_v2:+.2f} m/s), "
