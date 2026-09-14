@@ -227,7 +227,9 @@ SECOES = [
      "Nove métodos na mesma validação cruzada, com controle de vazamento."),
     ("mapas", "5 · Os mapas", "O que cada método produz no território?",
      "O campo corrigido de cada método e o que ele muda em relação à produção."),
-    ("destino", "6 · Para onde foi", "O que essa trilha concluiu?",
+    ("series", "6 · No tempo", "Como cada fonte se comporta ano a ano, no mesmo lugar?",
+     "Dez pontos fixos na Região Sul, com o máximo anual de todas as fontes sobreposto."),
+    ("destino", "7 · Para onde foi", "O que essa trilha concluiu?",
      "A conclusão metodológica e a comparação ainda em aberto."),
     ("acervo", "📚 Acervo", "", "Todas as figuras produzidas pelo pipeline."),
 ]
@@ -728,6 +730,89 @@ elif secao_atual == "mapas":
             "Estes são os campos de produção, não a leitura de validação cruzada — ver a ressalva "
             "de vazamento na seção 2."
         )
+
+
+# ---------------------------------------------------------------- séries
+
+elif secao_atual == "series":
+    cabecalho_da_secao("series")
+
+    st.markdown(
+        "As seções anteriores olham o espaço. Esta olha o **tempo**: dez estações da Região Sul, "
+        "escolhidas por espalhamento geográfico, com o máximo anual de cada fonte sobreposto. "
+        "É onde dá para ver a correção acontecendo ano a ano, evento a evento."
+    )
+
+    pontos = carregar("pontos_fixos.csv")
+    series = carregar("series_pontos_fixos.csv")
+
+    ORDEM = [
+        "INMET (real)",
+        "Base Pré-Interpolada",
+        "ERA5 original",
+        "V2 (IDW p=2, k=15)",
+        "V3 (Gaussiano σ=2.0, k=15)",
+        "V5 (Kriging Ordinário, Xavier 0.1°)",
+    ]
+    CORES = {
+        "INMET (real)": "#ffffff",
+        "Base Pré-Interpolada": "#b39ddb",
+        "ERA5 original": "#9e9e9e",
+        "V2 (IDW p=2, k=15)": "#3987e5",
+        "V3 (Gaussiano σ=2.0, k=15)": "#26a69a",
+        "V5 (Kriging Ordinário, Xavier 0.1°)": "#ef6c4d",
+    }
+
+    disponiveis = [f for f in ORDEM if f in set(series["fonte"])]
+    escolhidas = st.multiselect("Fontes", disponiveis, default=disponiveis, key="serie_fontes")
+
+    with st.expander("Quais são os dez pontos, e por que estes"):
+        st.caption(
+            "Seleção por *farthest-point sampling* (maximin sobre distância haversine): parte da "
+            "estação mais central e vai somando a que está mais longe do conjunto já escolhido. "
+            "Isso espalha os pontos pela região em vez de concentrá-los onde a rede é mais densa. "
+            "Estações com poucos anos de dado ficam de fora antes da seleção."
+        )
+        st.dataframe(pontos, hide_index=True, width="stretch")
+
+    recorte = series[series["fonte"].isin(escolhidas)]
+    codigos = pontos["codigo_estacao"].tolist()
+
+    for inicio in range(0, len(codigos), 2):
+        linha = st.columns(2)
+        for coluna, codigo in zip(linha, codigos[inicio : inicio + 2]):
+            da_estacao = recorte[recorte["codigo_estacao"] == codigo]
+            if da_estacao.empty:
+                coluna.info(f"Sem dado para {codigo}.")
+                continue
+            grafico = px.line(
+                da_estacao.sort_values("ano"),
+                x="ano", y="rajada_ms", color="fonte",
+                markers=True, height=330,
+                color_discrete_map=CORES,
+                category_orders={"fonte": ORDEM},
+                labels={"ano": "", "rajada_ms": "rajada máx. (m/s)", "fonte": ""},
+            )
+            grafico.update_layout(
+                title=dict(text=f"Estação {codigo}", font=dict(size=15)),
+                margin=dict(l=10, r=10, t=42, b=10),
+                legend=dict(orientation="h", yanchor="bottom", y=-0.35, x=0, font=dict(size=10)),
+            )
+            coluna.plotly_chart(grafico, width="stretch", config={"responsive": True})
+
+    st.info(
+        "**Como ler.** A linha branca é a observação. A **Base Pré-Interpolada** é `max(INMET, ERA5)` "
+        "na própria estação, antes de qualquer interpolação — ela acompanha a observação de perto por "
+        "construção, e serve para separar o erro da *fórmula* de correção do erro da *interpolação*. "
+        "Quando uma versão se afasta da branca num ano de pico, é a interpolação diluindo o extremo, "
+        "não a fórmula.",
+        icon="🧭",
+    )
+    st.caption(
+        "Só entram as fontes com grade diária materializada (ERA5, V2, V3, V5) mais INMET e a "
+        "Base Pré-Interpolada. V4, MSP, EVK, QK, RBF e IDW Adaptativo não têm série temporal "
+        "própria — existem como campo de percentil, e aparecem na seção 5."
+    )
 
 
 # ---------------------------------------------------------------- destino
