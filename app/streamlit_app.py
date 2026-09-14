@@ -83,6 +83,47 @@ def campo_mascarado(chave: str, sufixo: str) -> np.ndarray | None:
     return campo
 
 
+def camada_estacoes(figura_mapa, colorir: bool = False, percentil: str = "p99"):
+    """Sobrepõe as 615 estações do INMET — o dado de referência — a um mapa."""
+    estacoes = carregar("inmet_observado.csv")
+    if colorir:
+        marcador = dict(
+            size=7, color=estacoes[percentil], colorscale="Turbo",
+            line=dict(color="rgba(0,0,0,.6)", width=0.6),
+            colorbar=dict(title="m/s"),
+        )
+    else:
+        marcador = dict(size=4, color="rgba(255,255,255,.85)",
+                        line=dict(color="rgba(0,0,0,.5)", width=0.5))
+    figura_mapa.add_trace(
+        go.Scatter(
+            x=estacoes["longitude"], y=estacoes["latitude"], mode="markers",
+            marker=marcador, name="Estações INMET",
+            customdata=np.stack([estacoes["codigo_estacao"], estacoes[percentil]], axis=-1),
+            hovertemplate="%{customdata[0]}<br>observado %{customdata[1]:.1f} m/s<extra></extra>",
+            showlegend=False,
+        )
+    )
+    return figura_mapa
+
+
+def mapa_vazio(titulo: str):
+    """Base geográfica sem campo — para mostrar só as estações."""
+    pacote = pacote_de_mapas()
+    figura_mapa = go.Figure()
+    figura_mapa.add_trace(
+        go.Scatter(x=pacote["contorno_x"], y=pacote["contorno_y"], mode="lines",
+                   line=dict(color="rgba(255,255,255,.45)", width=1),
+                   hoverinfo="skip", showlegend=False)
+    )
+    figura_mapa.update_layout(
+        title=titulo, height=560, margin=dict(l=10, r=10, t=48, b=10),
+        xaxis=dict(title=None, showgrid=False),
+        yaxis=dict(title=None, showgrid=False, scaleanchor="x", scaleratio=1),
+    )
+    return figura_mapa
+
+
 def mapa(campo: np.ndarray, sufixo: str, titulo: str, divergente: bool = False):
     """Heatmap geográfico com 1° de longitude = 1° de latitude.
 
@@ -303,7 +344,7 @@ if secao_atual == "inicio":
     colunas = st.columns(4)
     colunas[0].metric("Versões da correção", "5", help="V1 a V5, ordem de produção")
     colunas[1].metric("Métodos comparados", str(p99["method"].nunique()))
-    colunas[2].metric("Estações na validação", f"{int(p99['n'].max())}")
+    colunas[2].metric("Estações do INMET (referência)", f"{int(p99['n'].max())}")
     colunas[3].metric("Escala espacial medida", "~10 km", help="F-madograma, R²≈0,98")
 
     st.divider()
@@ -375,13 +416,43 @@ o campo de resíduos para a grade inteira</div>
         )
 
     st.divider()
-    st.markdown("**De onde vem o resíduo**")
-    grade_de_figuras(
-        [FIGURAS / "01_exploracao/inmet_stations_map.png",
-         FIGURAS / "01_exploracao/map_station_max_gusts.png"],
-        legenda_por_nome=False,
+    st.markdown("#### O dado de referência")
+    st.markdown(
+        "Todo o resto do painel é medido contra o INMET. As estações são a **verdade de campo**: "
+        "a rajada que de fato ocorreu, sem modelo e sem interpolação no meio."
     )
-    st.caption("À esquerda, a rede de estações. À direita, a rajada máxima observada em cada uma.")
+
+    estacoes = carregar("inmet_observado.csv")
+    percentil_gt = st.radio(
+        "Percentil observado", ["p99", "p95"], horizontal=True, key="gt_pct"
+    )
+    esquerda, direita = st.columns([3, 2])
+    with esquerda:
+        st.plotly_chart(
+            camada_estacoes(
+                mapa_vazio(f"INMET — {percentil_gt} da rajada máxima anual"),
+                colorir=True, percentil=percentil_gt,
+            ),
+            width="stretch", config={"responsive": True},
+        )
+    with direita:
+        indicadores = st.columns(3)
+        indicadores[0].metric("Estações", f"{len(estacoes)}")
+        indicadores[1].metric("Anos de série", f"{int(estacoes['n_obs'].max())}")
+        indicadores[2].metric(
+            f"{percentil_gt}",
+            f"{estacoes[percentil_gt].min():.0f}–{estacoes[percentil_gt].max():.0f}",
+            help="Faixa observada entre as estações, em m/s",
+        )
+        st.markdown(
+            "**A cobertura é desigual, e é daí que nasce o problema.** A rede é densa no Sul e "
+            "no Sudeste e rala no Norte e no interior. Onde há estação, o resíduo é conhecido. "
+            "Onde não há, ele precisa ser **inventado a partir dos vizinhos** — e é exatamente "
+            "essa invenção que separa uma versão da outra."
+        )
+        st.caption(
+            "Passe o mouse sobre um ponto para ver o código da estação e o valor observado."
+        )
 
 
 # ---------------------------------------------------------------- versões
@@ -660,44 +731,85 @@ elif secao_atual == "mapas":
         "onde ele corrige, quanto, e com que textura espacial."
     )
 
-    coluna_a, coluna_b = st.columns([3, 1])
-    rotulo = coluna_a.selectbox("Método", list(MAPAS_025), key="mapa_metodo")
+    GT = "INMET — observado nas estações (referência)"
+    opcoes = [GT] + list(MAPAS_025)
+
+    coluna_a, coluna_b, coluna_c = st.columns([3, 1, 1])
+    rotulo = coluna_a.selectbox("Campo", opcoes, key="mapa_metodo")
     percentil = coluna_b.radio("Percentil", ["p99", "p95"], horizontal=True, key="mapa_pct")
-    chave = MAPAS_025[rotulo]
+    sobrepor = coluna_c.toggle("Estações", value=True, key="mapa_estacoes",
+                               help="Sobrepõe as 615 estações do INMET ao campo")
     numero = percentil[1:]
 
-    campo = campo_mascarado(f"campo_025__{chave}__p{numero}", "025")
-    referencia = campo_mascarado(f"campo_025__v2__p{numero}", "025")
-
-    if campo is None:
-        st.info(f"O campo de **{rotulo}** não foi pré-processado neste recorte.")
-    else:
-        esquerda, direita = st.columns(2)
+    if rotulo == GT:
+        esquerda, direita = st.columns([3, 2])
         with esquerda:
             st.plotly_chart(
-                mapa(campo, "025", f"{rotulo} — {percentil}"),
+                camada_estacoes(
+                    mapa_vazio(f"INMET observado — {percentil}"), colorir=True, percentil=percentil
+                ),
                 width="stretch", config={"responsive": True},
             )
         with direita:
-            if chave == "v2":
-                st.info(
-                    "A V2 é a própria referência das diferenças — não há painel de comparação "
-                    "para ela. Escolha outro método para ver o que muda.",
-                    icon="ℹ️",
-                )
-            elif referencia is None:
-                st.info("Campo de referência indisponível.")
-            else:
-                st.plotly_chart(
-                    mapa(campo - referencia, "025", f"{rotulo} − V2", divergente=True),
-                    width="stretch", config={"responsive": True},
-                )
-        st.caption(
-            "Esquerda: campo interpolado do método, grade contínua de 0,25°, domínio de máximos "
-            "anuais. Direita: **vermelho = o método prevê mais que a V2**, azul = prevê menos. "
-            "A V2 é a referência por ser o baseline de produção — a pergunta é o que muda ao "
-            "adotar outro método no lugar dela."
-        )
+            estacoes = carregar("inmet_observado.csv")
+            st.markdown(
+                "**Este é o dado de referência.** Tudo o que os outros mapas mostram é uma "
+                "tentativa de reconstruir este campo onde não há estação."
+            )
+            metricas_gt = st.columns(2)
+            metricas_gt[0].metric("Estações", f"{len(estacoes)}")
+            metricas_gt[1].metric(
+                f"{percentil} observado",
+                f"{estacoes[percentil].min():.0f}–{estacoes[percentil].max():.0f} m/s",
+            )
+            st.markdown(
+                "A rede é densa no Sul/Sudeste e esparsa no Norte e no interior do Centro-Oeste. "
+                "É essa desigualdade de cobertura que faz a escolha do método de interpolação "
+                "importar: onde há estação, quase todo método acerta; onde não há, cada um "
+                "inventa um valor diferente."
+            )
+            st.dataframe(
+                estacoes.nlargest(8, percentil)[["codigo_estacao", percentil, "n_obs"]]
+                .rename(columns={percentil: f"{percentil} (m/s)", "n_obs": "anos"}),
+                hide_index=True, width="stretch",
+            )
+            st.caption("As oito estações com o extremo observado mais alto.")
+    else:
+        chave = MAPAS_025[rotulo]
+        campo = campo_mascarado(f"campo_025__{chave}__p{numero}", "025")
+        referencia = campo_mascarado(f"campo_025__v2__p{numero}", "025")
+
+        if campo is None:
+            st.info(f"O campo de **{rotulo}** não foi pré-processado neste recorte.")
+        else:
+            esquerda, direita = st.columns(2)
+            with esquerda:
+                figura_campo = mapa(campo, "025", f"{rotulo} — {percentil}")
+                if sobrepor:
+                    camada_estacoes(figura_campo, percentil=percentil)
+                st.plotly_chart(figura_campo, width="stretch", config={"responsive": True})
+            with direita:
+                if chave == "v2":
+                    st.info(
+                        "A V2 é a própria referência das diferenças — não há painel de comparação "
+                        "para ela. Escolha outro método para ver o que muda.",
+                        icon="ℹ️",
+                    )
+                elif referencia is None:
+                    st.info("Campo de referência indisponível.")
+                else:
+                    figura_diferenca = mapa(
+                        campo - referencia, "025", f"{rotulo} − V2", divergente=True
+                    )
+                    if sobrepor:
+                        camada_estacoes(figura_diferenca, percentil=percentil)
+                    st.plotly_chart(figura_diferenca, width="stretch", config={"responsive": True})
+            st.caption(
+                "Esquerda: campo interpolado do método, grade contínua de 0,25°, domínio de máximos "
+                "anuais, com as estações do INMET sobrepostas. Direita: **vermelho = o método prevê "
+                "mais que a V2**, azul = prevê menos. A V2 é a referência por ser o baseline de "
+                "produção — a pergunta é o que muda ao adotar outro método no lugar dela."
+            )
 
     st.divider()
     st.markdown("#### A grade fina da V5 (0,1°)")
@@ -714,10 +826,10 @@ elif secao_atual == "mapas":
     else:
         esquerda, direita = st.columns(2)
         with esquerda:
-            st.plotly_chart(
-                mapa(v5, "xavier", f"V5 (Kriging Ordinário) — {percentil}"),
-                width="stretch", config={"responsive": True},
-            )
+            figura_v5 = mapa(v5, "xavier", f"V5 (Kriging Ordinário) — {percentil}")
+            if sobrepor:
+                camada_estacoes(figura_v5, percentil=percentil)
+            st.plotly_chart(figura_v5, width="stretch", config={"responsive": True})
         with direita:
             if v2_fino is None:
                 st.info("V2 reamostrada indisponível.")
@@ -797,6 +909,11 @@ elif secao_atual == "series":
                 title=dict(text=f"Estação {codigo}", font=dict(size=15)),
                 margin=dict(l=10, r=10, t=42, b=10),
                 legend=dict(orientation="h", yanchor="bottom", y=-0.35, x=0, font=dict(size=10)),
+            )
+            # O GT tem que dominar a leitura: é contra ele que todas as outras são julgadas.
+            grafico.update_traces(
+                line=dict(width=3.2), marker=dict(size=8),
+                selector=dict(name="INMET (real)"),
             )
             coluna.plotly_chart(grafico, width="stretch", config={"responsive": True})
 
