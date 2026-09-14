@@ -54,6 +54,42 @@ def carregar(nome: str) -> pd.DataFrame:
 
 
 @st.cache_data
+def v5_por_estacao(percentil: str) -> pd.DataFrame:
+    """V5 nas estações, nas duas leituras, alinhada ao observado do LOOCV.
+
+    `verdadeira` exclui a estação-alvo do próprio sistema de kriging;
+    `producao` é a grade materializada, amostrada na estação usando ela mesma.
+    A diferença entre as duas é o tamanho do vazamento.
+    """
+    predicoes = carregar("loocv_per_station_predictions.csv")
+    observado = (
+        predicoes[predicoes["pct"] == percentil][["codigo_estacao", "observed"]].drop_duplicates()
+    )
+    saida = []
+    for rotulo, arquivo in [
+        ("V5 (LOOCV real)", "v5_verdadeira_loocv.csv"),
+        ("V5 (amostrada na produção)", "v5_producao_amostrada.csv"),
+    ]:
+        fonte = carregar(arquivo)[["codigo_estacao", percentil]].dropna()
+        juntos = fonte.merge(observado, on="codigo_estacao")
+        juntos = juntos.rename(columns={percentil: "predicted"})
+        juntos["method"] = rotulo
+        saida.append(juntos[["method", "codigo_estacao", "predicted", "observed"]])
+    return pd.concat(saida, ignore_index=True)
+
+
+def erro_resumido(df: pd.DataFrame) -> dict:
+    erro = df["predicted"] - df["observed"]
+    return {
+        "bias": erro.mean(),
+        "rmse": (erro**2).mean() ** 0.5,
+        "mae": erro.abs().mean(),
+        "corr": df["predicted"].corr(df["observed"]),
+        "n": len(df),
+    }
+
+
+@st.cache_data
 def proporcao(caminho: str) -> float:
     """Largura/altura lida do cabeçalho do PNG — sem decodificar a imagem."""
     with open(caminho, "rb") as arquivo:
@@ -313,14 +349,21 @@ elif secao_atual == "versoes":
     st.markdown("#### O que cada versão produz, estação a estação")
 
     predicoes = carregar("loocv_per_station_predictions.csv")
-    versoes_loocv = sorted(m for m in predicoes["method"].unique() if m.startswith("V"))
     coluna_a, coluna_b = st.columns([2, 1])
+    percentil = coluna_b.radio("Percentil", ["p99", "p95"], horizontal=True, key="ver_pct")
+
+    do_loocv = predicoes[predicoes["pct"] == percentil][
+        ["method", "codigo_estacao", "predicted", "observed"]
+    ]
+    do_loocv = do_loocv[do_loocv["method"].str.startswith("V")]
+    v5 = v5_por_estacao(percentil)
+    todas = pd.concat([do_loocv, v5[v5["method"] == "V5 (LOOCV real)"]], ignore_index=True)
+
+    versoes_loocv = sorted(todas["method"].unique())
     escolhidas = coluna_a.multiselect(
         "Versões", versoes_loocv, default=versoes_loocv, key="ver_metodos"
     )
-    percentil = coluna_b.radio("Percentil", ["p99", "p95"], horizontal=True, key="ver_pct")
-
-    recorte = predicoes[(predicoes["pct"] == percentil) & (predicoes["method"].isin(escolhidas))]
+    recorte = todas[todas["method"].isin(escolhidas)]
     if recorte.empty:
         st.info("Selecione ao menos uma versão.")
     else:
@@ -354,10 +397,36 @@ elif secao_atual == "versoes":
             "A nuvem inteira abaixo da diagonal é o viés de subestimação das três versões."
         )
 
-    st.warning(
-        "**V1 e V5 não aparecem no gráfico.** A V1 é legado e saiu do comparador. A V5 de produção "
-        "nunca passou por validação cruzada — o valor amostrado numa estação foi calculado usando "
-        "a própria estação, então compará-la aqui seria compará-la com vantagem.",
+    st.caption(
+        "A V1 não aparece: é legado e saiu do comparador. Todas as demais são preditas sem que a "
+        "estação participe do próprio cálculo."
+    )
+
+    st.markdown("#### A V5 e o tamanho do vazamento")
+    st.markdown(
+        "A V5 é a **melhor da linhagem** — mas há duas leituras dela, e a diferença entre as duas "
+        "é grande o bastante para mudar qualquer conclusão."
+    )
+    leituras = v5_por_estacao(percentil)
+    linhas = []
+    for rotulo in ["V5 (amostrada na produção)", "V5 (LOOCV real)"]:
+        resumo = erro_resumido(leituras[leituras["method"] == rotulo])
+        linhas.append({
+            "Leitura": rotulo,
+            "Viés": round(resumo["bias"], 2),
+            "RMSE": round(resumo["rmse"], 2),
+            "MAE": round(resumo["mae"], 2),
+            "Corr": round(resumo["corr"], 2),
+            "n": resumo["n"],
+        })
+    tabela_v5 = pd.DataFrame(linhas)
+    coluna_esq, coluna_dir = st.columns([2, 3])
+    coluna_esq.dataframe(tabela_v5, hide_index=True, width="stretch")
+    diferenca = abs(tabela_v5.loc[1, "Viés"] - tabela_v5.loc[0, "Viés"])
+    coluna_dir.warning(
+        f"A grade de produção é amostrada na estação **usando a própria estação** no sistema de "
+        f"kriging — ela se prevê em parte a si mesma. Medido em {percentil}, isso vale "
+        f"**{diferenca:.2f} m/s de viés**. Só a linha de baixo é comparável com os demais métodos.",
         icon="⚠️",
     )
 
@@ -428,7 +497,22 @@ elif secao_atual == "loocv":
 
     metricas = carregar("loocv_consolidated_metrics.csv")
     percentil = st.radio("Percentil", ["p99", "p95"], horizontal=True, key="loocv_pct")
-    recorte = metricas[metricas["pct"] == percentil].sort_values("rmse").reset_index(drop=True)
+    recorte = metricas[metricas["pct"] == percentil].copy()
+
+    # A V5 não está na tabela consolidada (entrou na numeração depois). Calculada
+    # aqui do mesmo cache, contra o mesmo observado — o método de cálculo foi
+    # conferido reproduzindo uma linha já publicada da tabela.
+    leituras = v5_por_estacao(percentil)
+    resumo_v5 = erro_resumido(leituras[leituras["method"] == "V5 (LOOCV real)"])
+    recorte = pd.concat([
+        recorte,
+        pd.DataFrame([{
+            "method": "V5 (Kriging Ordinário)", "pct": percentil,
+            "bias": resumo_v5["bias"], "rmse": resumo_v5["rmse"],
+            "mae": resumo_v5["mae"], "corr": resumo_v5["corr"], "n": resumo_v5["n"],
+        }]),
+    ], ignore_index=True)
+    recorte = recorte.sort_values("rmse").reset_index(drop=True)
 
     esquerda, direita = st.columns([3, 2])
     with esquerda:
@@ -442,19 +526,26 @@ elif secao_atual == "loocv":
         grafico.update_layout(margin=dict(l=0, r=0, t=10, b=0))
         st.plotly_chart(grafico, width="stretch", config={"responsive": True})
     with direita:
-        exibir = recorte[["method", "bias", "rmse", "mae", "corr"]].copy()
-        exibir.columns = ["Método", "Viés", "RMSE", "MAE", "Corr"]
+        exibir = recorte[["method", "bias", "rmse", "mae", "corr", "n"]].copy()
+        exibir.columns = ["Método", "Viés", "RMSE", "MAE", "Corr", "n"]
         for coluna in ["Viés", "RMSE", "MAE", "Corr"]:
             exibir[coluna] = exibir[coluna].round(2)
+        exibir["n"] = exibir["n"].astype(int)
         st.dataframe(exibir, hide_index=True, width="stretch")
-        st.caption(f"Todos em m/s, exceto correlação. N = {int(recorte['n'].iloc[0])} estações.")
+        st.caption(
+            "Todos em m/s, exceto correlação. A coluna `n` traz o número de estações de cada "
+            "método — a V5 cobre um conjunto ligeiramente menor."
+        )
 
-    producao = recorte[recorte["method"].str.startswith(("V2", "V3", "V4"))]
+    producao = recorte[recorte["method"].str.startswith(("V2", "V3", "V4", "V5"))]
     if not producao.empty:
+        melhor_v = producao.sort_values("rmse").iloc[0]
         st.error(
-            f"**As versões de produção são as piores da lista.** V2, V3 e V4 aparecem com viés de "
+            f"**As versões da linhagem ocupam o fim da lista.** V2 a V5 aparecem com viés de "
             f"{producao['bias'].min():.1f} a {producao['bias'].max():.1f} m/s — subestimando o "
-            "extremo por larga margem, exatamente o que a seção 3 prevê.",
+            f"extremo por larga margem, exatamente o que a seção 3 prevê. A melhor delas é a "
+            f"**{melhor_v['method']}** (RMSE {melhor_v['rmse']:.2f}), ainda assim atrás de todos "
+            "os métodos alternativos.",
             icon="⚠️",
         )
     melhor = recorte.iloc[0]
@@ -505,18 +596,18 @@ elif secao_atual == "destino":
             "diretamente, adaptar o expoente localmente, ou simular o processo extremal."
         )
     with direita, st.container(border=True):
-        st.markdown("##### A decisão de rumo")
+        st.markdown("##### A comparação em aberto")
         st.markdown(
-            "**O projeto passou a seguir pela trilha de IA.** A base de IA desenvolvida em paralelo "
-            "foi comparada contra a interpolação em pé de igualdade — mesmo recorte espacial, mesmo "
-            "período fora da amostra de treino, e com validação cruzada real do lado da interpolação "
-            "— e levou vantagem."
+            "Uma base de IA desenvolvida em paralelo está sendo comparada contra a interpolação em "
+            "pé de igualdade: mesmo recorte espacial, mesmo período fora da amostra de treino, e "
+            "validação cruzada real do lado da interpolação. **O resultado dessa comparação está "
+            "em consolidação e não é reportado aqui.**"
         )
 
     st.caption(
-        "A comparação em pé de igualdade é deliberada: a versão de produção usa a rede nacional "
-        "inteira e o histórico completo, vantagem de informação que a base de IA não tinha. Por "
-        "isso a régua usou uma versão restrita ao mesmo domínio e período."
+        "A régua em pé de igualdade é deliberada: a versão de produção usa a rede nacional inteira "
+        "e o histórico completo, vantagem de informação que a base de IA não tinha — por isso a "
+        "comparação usa uma versão restrita ao mesmo domínio e período."
     )
 
 
