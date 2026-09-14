@@ -3,8 +3,10 @@
 import struct
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 RAIZ = Path(__file__).resolve().parent.parent
@@ -51,6 +53,69 @@ st.markdown(
 @st.cache_data
 def carregar(nome: str) -> pd.DataFrame:
     return pd.read_csv(DADOS / nome)
+
+
+MAPAS_025 = {
+    "V2 (IDW p=2, k=15)": "v2",
+    "V3 (Gaussiano σ=2,0°, k=15)": "v3",
+    "V4 (Brown-Resnick calibrado)": "v4",
+    "IDW Adaptativo": "idw_adapt",
+    "Quantile Kriging": "qk",
+    "RBF Multiquadric": "rbf",
+    "EVK": "evk",
+    "MSP1 (F-madograma)": "msp1_fmadograma",
+    "MSP1 (Verossimilhança composta)": "msp1_verossimilhanca",
+}
+
+
+@st.cache_resource
+def pacote_de_mapas():
+    return dict(np.load(DADOS / "mapas_espaciais.npz", allow_pickle=False))
+
+
+def campo_mascarado(chave: str, sufixo: str) -> np.ndarray | None:
+    pacote = pacote_de_mapas()
+    if chave not in pacote:
+        return None
+    campo = pacote[chave].astype("float64").copy()
+    mascara = pacote[f"mask_{sufixo}"]
+    campo[~mascara] = np.nan
+    return campo
+
+
+def mapa(campo: np.ndarray, sufixo: str, titulo: str, divergente: bool = False):
+    """Heatmap geográfico com 1° de longitude = 1° de latitude.
+
+    A trava de proporção é segura aqui porque a navegação é por estado: seção
+    não selecionada não é montada, então nunca há container escondido sem
+    largura (a armadilha de primeiro desenho do Streamlit).
+    """
+    pacote = pacote_de_mapas()
+    lats, lons = pacote[f"lats_{sufixo}"], pacote[f"lons_{sufixo}"]
+    validos = campo[~np.isnan(campo)]
+    if divergente:
+        limite = float(np.percentile(np.abs(validos), 95)) if validos.size else 1.0
+        zmin, zmax, escala = -limite, limite, "RdBu_r"
+    else:
+        zmin = float(validos.min()) if validos.size else 0.0
+        zmax = float(validos.max()) if validos.size else 1.0
+        escala = "Turbo"
+    figura_mapa = go.Figure(
+        go.Heatmap(z=campo, x=lons, y=lats, zmin=zmin, zmax=zmax, colorscale=escala,
+                   hovertemplate="lon %{x:.2f}<br>lat %{y:.2f}<br>%{z:.2f} m/s<extra></extra>",
+                   colorbar=dict(title="m/s"))
+    )
+    figura_mapa.add_trace(
+        go.Scatter(x=pacote["contorno_x"], y=pacote["contorno_y"], mode="lines",
+                   line=dict(color="rgba(255,255,255,.45)", width=1),
+                   hoverinfo="skip", showlegend=False)
+    )
+    figura_mapa.update_layout(
+        title=titulo, height=560, margin=dict(l=10, r=10, t=48, b=10),
+        xaxis=dict(title=None, showgrid=False),
+        yaxis=dict(title=None, showgrid=False, scaleanchor="x", scaleratio=1),
+    )
+    return figura_mapa
 
 
 @st.cache_data
@@ -160,8 +225,10 @@ SECOES = [
      "A conta que limita o mecanismo, e a escala espacial medida nos dados."),
     ("loocv", "4 · A régua: LOOCV", "Qual método realmente prevê melhor onde não há estação?",
      "Nove métodos na mesma validação cruzada, com controle de vazamento."),
-    ("destino", "5 · Para onde foi", "O que essa trilha concluiu?",
-     "A conclusão metodológica e a decisão de rumo do projeto."),
+    ("mapas", "5 · Os mapas", "O que cada método produz no território?",
+     "O campo corrigido de cada método e o que ele muda em relação à produção."),
+    ("destino", "6 · Para onde foi", "O que essa trilha concluiu?",
+     "A conclusão metodológica e a comparação ainda em aberto."),
     ("acervo", "📚 Acervo", "", "Todas as figuras produzidas pelo pipeline."),
 ]
 ROTULOS = {chave: rotulo for chave, rotulo, _, _ in SECOES}
@@ -579,6 +646,88 @@ elif secao_atual == "loocv":
         "ao mesmo tempo. É o melhor resultado medido, mas custa minutos por ponto — serve como "
         "ferramenta de auditoria pontual, não para gerar a grade histórica inteira."
     )
+
+
+# ---------------------------------------------------------------- mapas
+
+elif secao_atual == "mapas":
+    cabecalho_da_secao("mapas")
+
+    st.markdown(
+        "A seção 4 diz quem **prevê** melhor. Esta diz o que cada método **produz no mapa** — "
+        "onde ele corrige, quanto, e com que textura espacial."
+    )
+
+    coluna_a, coluna_b = st.columns([3, 1])
+    rotulo = coluna_a.selectbox("Método", list(MAPAS_025), key="mapa_metodo")
+    percentil = coluna_b.radio("Percentil", ["p99", "p95"], horizontal=True, key="mapa_pct")
+    chave = MAPAS_025[rotulo]
+    numero = percentil[1:]
+
+    campo = campo_mascarado(f"campo_025__{chave}__p{numero}", "025")
+    referencia = campo_mascarado(f"campo_025__v2__p{numero}", "025")
+
+    if campo is None:
+        st.info(f"O campo de **{rotulo}** não foi pré-processado neste recorte.")
+    else:
+        esquerda, direita = st.columns(2)
+        with esquerda:
+            st.plotly_chart(
+                mapa(campo, "025", f"{rotulo} — {percentil}"),
+                width="stretch", config={"responsive": True},
+            )
+        with direita:
+            if chave == "v2":
+                st.info(
+                    "A V2 é a própria referência das diferenças — não há painel de comparação "
+                    "para ela. Escolha outro método para ver o que muda.",
+                    icon="ℹ️",
+                )
+            elif referencia is None:
+                st.info("Campo de referência indisponível.")
+            else:
+                st.plotly_chart(
+                    mapa(campo - referencia, "025", f"{rotulo} − V2", divergente=True),
+                    width="stretch", config={"responsive": True},
+                )
+        st.caption(
+            "Esquerda: campo interpolado do método, grade contínua de 0,25°, domínio de máximos "
+            "anuais. Direita: **vermelho = o método prevê mais que a V2**, azul = prevê menos. "
+            "A V2 é a referência por ser o baseline de produção — a pergunta é o que muda ao "
+            "adotar outro método no lugar dela."
+        )
+
+    st.divider()
+    st.markdown("#### A grade fina da V5 (0,1°)")
+    st.caption(
+        "A V5 é a única versão gerada no grid nativo de 0,1° — cerca de 6× mais fino que o grid "
+        "de 0,25° usado por todo o resto. Aqui a V2 aparece reamostrada para o mesmo grid, para "
+        "que a diferença seja comparável."
+    )
+
+    v5 = campo_mascarado(f"campo_xavier__v5__p{numero}", "xavier")
+    v2_fino = campo_mascarado(f"campo_xavier__v2_on_xavier__p{numero}", "xavier")
+    if v5 is None:
+        st.info("Grade fina da V5 indisponível.")
+    else:
+        esquerda, direita = st.columns(2)
+        with esquerda:
+            st.plotly_chart(
+                mapa(v5, "xavier", f"V5 (Kriging Ordinário) — {percentil}"),
+                width="stretch", config={"responsive": True},
+            )
+        with direita:
+            if v2_fino is None:
+                st.info("V2 reamostrada indisponível.")
+            else:
+                st.plotly_chart(
+                    mapa(v5 - v2_fino, "xavier", f"V5 − V2 — {percentil}", divergente=True),
+                    width="stretch", config={"responsive": True},
+                )
+        st.caption(
+            "Estes são os campos de produção, não a leitura de validação cruzada — ver a ressalva "
+            "de vazamento na seção 2."
+        )
 
 
 # ---------------------------------------------------------------- destino
