@@ -1,17 +1,51 @@
 """Painel público da Base Vendaval — a trilha de interpolação, do mecanismo ao teto."""
 
+import struct
 from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 
 RAIZ = Path(__file__).resolve().parent.parent
 FIGURAS = RAIZ / "figuras"
 DADOS = RAIZ / "dados"
 
-st.set_page_config(page_title="Base Vendaval — interpolação de extremos", page_icon="🌬️", layout="wide")
+st.set_page_config(
+    page_title="Base Vendaval — interpolação de extremos",
+    page_icon="🌬️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+st.markdown(
+    """
+<style>
+  .block-container { padding-top: 2.2rem; max-width: 1500px; }
+  h1, h2, h3 { letter-spacing: -0.01em; }
+  .hero {
+    border: 1px solid rgba(57,135,229,.35);
+    border-left: 4px solid #3987e5;
+    border-radius: 12px;
+    padding: 1.4rem 1.6rem;
+    background: linear-gradient(100deg, rgba(57,135,229,.11), rgba(57,135,229,.02));
+    margin-bottom: .4rem;
+  }
+  .hero h1 { margin: 0 0 .45rem 0; font-size: 2.1rem; }
+  .hero p { margin: 0; opacity: .88; font-size: 1.02rem; line-height: 1.55; }
+  .passo {
+    border-left: 3px solid #3987e5; padding: .15rem 0 .15rem .8rem;
+    margin-bottom: .7rem;
+  }
+  .passo b { color: #6aa8f0; }
+  div[data-testid="stMetricValue"] { font-size: 1.5rem; }
+</style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ---------------------------------------------------------------- dados
 
 
 @st.cache_data
@@ -19,50 +53,181 @@ def carregar(nome: str) -> pd.DataFrame:
     return pd.read_csv(DADOS / nome)
 
 
-def fig(nome: str, legenda: str = "") -> None:
+@st.cache_data
+def proporcao(caminho: str) -> float:
+    """Largura/altura lida do cabeçalho do PNG — sem decodificar a imagem."""
+    with open(caminho, "rb") as arquivo:
+        cabecalho = arquivo.read(33)
+    largura, altura = struct.unpack(">II", cabecalho[16:24])
+    return largura / altura
+
+
+def figura(nome: str, legenda: str = "") -> None:
+    """Desenha a figura com a largura que o formato dela pede.
+
+    Multipainel largo (tira horizontal) precisa de largura inteira; retrato alto
+    fica gigante em largura inteira e precisa ser contido. Meia largura só serve
+    para figura de painel único, com proporção próxima de quadrada.
+    """
     caminho = FIGURAS / nome
-    if caminho.exists():
+    if not caminho.exists():
+        st.info(f"Figura ausente: `{nome}`.")
+        return
+    aspecto = proporcao(str(caminho))
+    if aspecto < 1.0:  # retrato — conter, senão domina a tela inteira
+        _, meio, _ = st.columns([1, 2, 1])
+        alvo = meio
+    else:
+        alvo = st.container()
+    with alvo:
         st.image(str(caminho), caption=legenda or None, width="stretch")
 
 
-def secao(numero: str, titulo: str, pergunta: str) -> None:
-    st.subheader(f"{numero} · {titulo}")
-    st.caption(pergunta)
+def grade_de_figuras(arquivos: list[Path], legenda_por_nome: bool = True) -> None:
+    """Agrupa figuras em linhas, com quantidade por linha vinda da proporção."""
+    fila: list[Path] = []
+
+    def descarregar(itens: list[Path], por_linha: int) -> None:
+        for inicio in range(0, len(itens), por_linha):
+            lote = itens[inicio : inicio + por_linha]
+            colunas = st.columns(por_linha)
+            for coluna, arquivo in zip(colunas, lote):
+                with coluna:
+                    st.image(
+                        str(arquivo),
+                        caption=arquivo.stem.replace("_", " ") if legenda_por_nome else None,
+                        width="stretch",
+                    )
+
+    for arquivo in arquivos:
+        aspecto = proporcao(str(arquivo))
+        if aspecto >= 2.2 or aspecto < 1.0:
+            descarregar(fila, 2)
+            fila = []
+            st.image(
+                str(arquivo),
+                caption=arquivo.stem.replace("_", " ") if legenda_por_nome else None,
+                width="stretch",
+            )
+        else:
+            fila.append(arquivo)
+    descarregar(fila, 2)
 
 
-# Ordem de produção, não ordem de qualidade. Fonte: registro de versões do projeto.
-VERSOES = [
-    ("V1", "Magnitude apenas", "Legado",
-     "Resíduo interpolado por IDW somado à magnitude bruta do ERA5. Sem tratar direção do vento."),
-    ("V2", "IDW p=2, k=15", "Baseline de produção antigo",
-     "IDW clássico (peso 1/d²) nos resíduos, mais interpolação da direção do vento. "
-     "Com p=2 o peso cai rápido demais: o campo vira um mosaico quase-constante em torno de cada estação."),
-    ("V3", "Gaussiano σ=2,0°, k=15", "Tentativa de corrigir a V2",
-     "Troca o peso IDW por kernel gaussiano. Resolveu a transição abrupta, mas perdeu extremos — "
-     "σ=2,0° é 13× o default do próprio código."),
-    ("V4", "Brown-Resnick calibrado", "Kernel recalibrado",
-     "Mesmo mecanismo, com peso calibrado pela escala de dependência medida e distância geodésica "
-     "(corrige a distorção de calcular distância direto em graus). Mantém a limitação estrutural."),
-    ("V5", "Kriging Ordinário, grid 0,1°", "Candidato de produção",
-     "Resolve um sistema linear com todas as estações simultaneamente, em vez de k vizinhos fixos, "
-     "num grid ~6× mais fino. Sai da família de combinação convexa de peso fixo."),
+SECOES = [
+    ("inicio", "🏠 Início", "", ""),
+    ("mecanismo", "1 · O mecanismo", "Como se corrige uma grade usando pontos esparsos?",
+     "Os três passos que nunca mudaram, e o único que muda entre versões."),
+    ("versoes", "2 · As versões", "O que cada versão mudou no passo de interpolação?",
+     "De V1 a V5, com o que cada uma tentou resolver e o que produziu."),
+    ("teto", "3 · O teto estrutural", "Por que V2, V3 e V4 nunca reproduzem um extremo local?",
+     "A conta que limita o mecanismo, e a escala espacial medida nos dados."),
+    ("loocv", "4 · A régua: LOOCV", "Qual método realmente prevê melhor onde não há estação?",
+     "Nove métodos na mesma validação cruzada, com controle de vazamento."),
+    ("destino", "5 · Para onde foi", "O que essa trilha concluiu?",
+     "A conclusão metodológica e a decisão de rumo do projeto."),
+    ("acervo", "📚 Acervo", "", "Todas as figuras produzidas pelo pipeline."),
 ]
+ROTULOS = {chave: rotulo for chave, rotulo, _, _ in SECOES}
 
-st.title("🌬️ Base Vendaval")
-st.markdown(
-    "**Correção da rajada máxima de vento do ERA5 usando as estações do INMET.** "
-    "A reanálise cobre o país inteiro em grade regular, mas suaviza o extremo, porque cada célula é "
-    "uma média de área. As estações medem o extremo real, em pontos esparsos."
-)
-st.info(
-    "Este painel cobre a **trilha de interpolação**: como espalhar a correção das estações para a grade, "
-    "e como as versões dessa etapa foram testadas entre si. A trilha de IA é um trabalho separado.",
-    icon="🧭",
-)
+if "secao" not in st.session_state:
+    st.session_state.secao = "inicio"
 
-with st.expander("📁 Onde ficam os dados e o código"):
+
+def ir_para(destino: str) -> None:
+    """Navegação do hub.
+
+    Precisa rodar como callback de botão (`on_click`), nunca no corpo do script:
+    `secao` é a chave do rádio da barra lateral, e o Streamlit proíbe escrever
+    numa chave de widget já instanciado no mesmo ciclo. Callback executa antes
+    do próximo ciclo, quando nenhum widget existe ainda.
+    """
+    st.session_state.secao = destino
+
+
+with st.sidebar:
+    st.markdown("### 🌬️ Base Vendaval")
+    st.caption("Correção de rajada por interpolação")
+    st.radio(
+        "Seções",
+        [chave for chave, _, _, _ in SECOES],
+        format_func=lambda chave: ROTULOS[chave],
+        key="secao",
+        label_visibility="collapsed",
+    )
+    st.divider()
+    st.caption(
+        "Passe o mouse sobre qualquer figura e use o ícone de expandir "
+        "para vê-la em tela cheia."
+    )
+
+secao_atual = st.session_state.secao
+
+
+def cabecalho_da_secao(chave: str) -> None:
+    rotulo, pergunta = ROTULOS[chave], dict((c, p) for c, _, p, _ in SECOES)[chave]
+    st.subheader(rotulo)
+    if pergunta:
+        st.caption(pergunta)
+
+
+# ---------------------------------------------------------------- início
+
+if secao_atual == "inicio":
     st.markdown(
         """
+<div class="hero">
+  <h1>🌬️ Base Vendaval</h1>
+  <p><b>Correção da rajada máxima de vento do ERA5 usando as estações do INMET.</b><br>
+  A reanálise cobre o país inteiro em grade regular, mas suaviza o extremo, porque cada célula
+  é uma média de área. As estações medem o extremo real, em pontos esparsos. O projeto usa umas
+  para corrigir a outra.</p>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.info(
+        "Este painel cobre a **trilha de interpolação**: como espalhar a correção das estações "
+        "para a grade, e como as versões dessa etapa foram testadas entre si. "
+        "A trilha de IA é um trabalho separado.",
+        icon="🧭",
+    )
+
+    metricas = carregar("loocv_consolidated_metrics.csv")
+    p99 = metricas[metricas["pct"] == "p99"]
+    colunas = st.columns(4)
+    colunas[0].metric("Versões da correção", "5", help="V1 a V5, ordem de produção")
+    colunas[1].metric("Métodos comparados", str(p99["method"].nunique()))
+    colunas[2].metric("Estações na validação", f"{int(p99['n'].max())}")
+    colunas[3].metric("Escala espacial medida", "~10 km", help="F-madograma, R²≈0,98")
+
+    st.divider()
+    st.markdown("#### Por onde começar")
+
+    navegaveis = [s for s in SECOES if s[0] not in ("inicio", "acervo")]
+    for inicio in range(0, len(navegaveis), 2):
+        linha = st.columns(2)
+        for coluna, (chave, rotulo, pergunta, resumo) in zip(linha, navegaveis[inicio : inicio + 2]):
+            with coluna, st.container(border=True):
+                st.markdown(f"**{rotulo}**")
+                st.caption(pergunta)
+                st.markdown(resumo)
+                st.button(
+                    "Abrir", key=f"ir_{chave}", width="stretch",
+                    on_click=ir_para, args=(chave,),
+                )
+
+    with st.container(border=True):
+        st.markdown("**📚 Acervo**")
+        st.markdown("Todas as figuras produzidas pelo pipeline, agrupadas por tema.")
+        st.button(
+            "Abrir", key="ir_acervo", width="stretch",
+            on_click=ir_para, args=("acervo",),
+        )
+
+    with st.expander("📁 Onde ficam os dados e o código"):
+        st.markdown(
+            """
 | | Onde |
 | --- | --- |
 | Dados do projeto | Máquina 3 do cluster de pesquisa, em `/home/publico/vendaval/` |
@@ -71,90 +236,141 @@ with st.expander("📁 Onde ficam os dados e o código"):
 | Código do pipeline | Repositório `Base Vendaval`, no Azure DevOps |
 
 Este painel carrega apenas resultados já produzidos. Nenhum dado bruto é publicado aqui.
-        """
-    )
-
-st.divider()
-
-abas = st.tabs(
-    [
-        "1 · O mecanismo",
-        "2 · As versões",
-        "3 · O teto estrutural",
-        "4 · A régua: LOOCV",
-        "5 · Para onde foi",
-        "Acervo",
-    ]
-)
+            """
+        )
 
 
-# ---------------------------------------------------------------- 1. mecanismo
+# ---------------------------------------------------------------- mecanismo
 
-with abas[0]:
-    secao("1", "O mecanismo", "Como se corrige uma grade usando pontos esparsos?")
+elif secao_atual == "mecanismo":
+    cabecalho_da_secao("mecanismo")
 
     esquerda, direita = st.columns([2, 3])
     with esquerda:
         st.markdown(
             """
-Três passos, iguais em **todas** as versões:
-
-1. **Resíduo por estação** — `r = rajada_INMET − rajada_ERA5`
-2. **Interpolar** o campo de resíduos para a grade inteira
-3. **Somar** de volta — `corrigido(x) = ERA5(x) + r̂(x)`
-
-O passo 1 e o 3 nunca mudaram. **O que distingue uma versão da outra é
-exclusivamente o passo 2** — e é nele que mora todo este painel.
-            """
+<div class="passo"><b>1. Resíduo por estação</b><br>
+<code>r = rajada_INMET − rajada_ERA5</code></div>
+<div class="passo"><b>2. Interpolar</b><br>
+o campo de resíduos para a grade inteira</div>
+<div class="passo"><b>3. Somar de volta</b><br>
+<code>corrigido(x) = ERA5(x) + r̂(x)</code></div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            "Os passos 1 e 3 nunca mudaram. **O que distingue uma versão da outra é "
+            "exclusivamente o passo 2** — e é nele que mora todo este painel."
         )
     with direita:
-        fig("01_exploracao/boxplot_gusts_comparison.png")
-        st.caption(
-            "Por que corrigir: as medianas quase coincidem, mas a estação registra rajadas "
-            "muito acima do teto que a reanálise alcança. O erro está na cauda."
+        figura(
+            "01_exploracao/boxplot_gusts_comparison.png",
+            "Por que corrigir: as medianas quase coincidem, mas a estação registra rajadas muito "
+            "acima do teto que a reanálise alcança. O erro está na cauda.",
         )
 
     st.divider()
-    coluna_a, coluna_b = st.columns(2)
-    with coluna_a:
-        fig("01_exploracao/inmet_stations_map.png")
-        st.caption("A rede de estações: é daqui que sai o resíduo a ser espalhado.")
-    with coluna_b:
-        fig("01_exploracao/map_station_max_gusts.png")
-        st.caption("Rajada máxima observada por estação.")
+    st.markdown("**De onde vem o resíduo**")
+    grade_de_figuras(
+        [FIGURAS / "01_exploracao/inmet_stations_map.png",
+         FIGURAS / "01_exploracao/map_station_max_gusts.png"],
+        legenda_por_nome=False,
+    )
+    st.caption("À esquerda, a rede de estações. À direita, a rajada máxima observada em cada uma.")
 
 
-# ---------------------------------------------------------------- 2. versões
+# ---------------------------------------------------------------- versões
 
-with abas[1]:
-    secao("2", "As versões", "O que cada versão mudou no passo de interpolação?")
+elif secao_atual == "versoes":
+    cabecalho_da_secao("versoes")
 
-    for sigla, metodo, status, descricao in VERSOES:
+    versoes = [
+        ("V1", "Magnitude apenas", "Legado",
+         "Resíduo interpolado por IDW somado à magnitude bruta do ERA5. Sem tratar direção do vento."),
+        ("V2", "IDW p=2, k=15", "Baseline de produção antigo",
+         "IDW clássico (peso 1/d²) nos resíduos, mais interpolação da direção. Com p=2 o peso cai "
+         "rápido demais: o campo vira um mosaico quase-constante em torno de cada estação."),
+        ("V3", "Gaussiano σ=2,0°, k=15", "Tentativa de corrigir a V2",
+         "Troca o peso IDW por kernel gaussiano. Resolveu a transição abrupta, mas perdeu extremos — "
+         "σ=2,0° é 13× o default do próprio código."),
+        ("V4", "Brown-Resnick calibrado", "Kernel recalibrado",
+         "Peso calibrado pela escala de dependência medida, com distância geodésica — corrige a "
+         "distorção de calcular distância direto em graus. Mantém a limitação estrutural."),
+        ("V5", "Kriging Ordinário, grid 0,1°", "Candidato de produção",
+         "Resolve um sistema linear com todas as estações simultaneamente, em vez de k vizinhos "
+         "fixos, num grid ~6× mais fino. Sai da família de peso fixo."),
+    ]
+    for sigla, metodo, status, descricao in versoes:
         with st.container(border=True):
-            topo, corpo = st.columns([1, 5])
+            topo, corpo = st.columns([1, 6])
             topo.markdown(f"### {sigla}")
             topo.caption(status)
             corpo.markdown(f"**{metodo}**  \n{descricao}")
 
-    st.caption(
-        "A numeração é ordem de produção, não de qualidade — a seção 4 mostra que a ordem "
-        "de desempenho é outra."
+    st.caption("A numeração é ordem de produção, não de qualidade — a seção 4 mostra a ordem real.")
+
+    st.divider()
+    st.markdown("#### O que cada versão produz, estação a estação")
+
+    predicoes = carregar("loocv_per_station_predictions.csv")
+    versoes_loocv = sorted(m for m in predicoes["method"].unique() if m.startswith("V"))
+    coluna_a, coluna_b = st.columns([2, 1])
+    escolhidas = coluna_a.multiselect(
+        "Versões", versoes_loocv, default=versoes_loocv, key="ver_metodos"
+    )
+    percentil = coluna_b.radio("Percentil", ["p99", "p95"], horizontal=True, key="ver_pct")
+
+    recorte = predicoes[(predicoes["pct"] == percentil) & (predicoes["method"].isin(escolhidas))]
+    if recorte.empty:
+        st.info("Selecione ao menos uma versão.")
+    else:
+        grafico = px.scatter(
+            recorte,
+            x="observed",
+            y="predicted",
+            color="method",
+            hover_name="codigo_estacao",
+            opacity=0.55,
+            height=520,
+            labels={"observed": f"Observado na estação — {percentil} (m/s)",
+                    "predicted": f"Predito pela versão — {percentil} (m/s)",
+                    "method": ""},
+        )
+        limite = [
+            float(min(recorte["observed"].min(), recorte["predicted"].min())),
+            float(max(recorte["observed"].max(), recorte["predicted"].max())),
+        ]
+        grafico.add_shape(type="line", x0=limite[0], y0=limite[0], x1=limite[1], y1=limite[1],
+                          line=dict(dash="dash", color="#888", width=1))
+        grafico.update_layout(
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+            margin=dict(l=10, r=10, t=10, b=10),
+        )
+        grafico.update_xaxes(range=limite)
+        grafico.update_yaxes(range=limite)
+        st.plotly_chart(grafico, width="stretch", config={"responsive": True})
+        st.caption(
+            "Cada ponto é uma estação, predita sem que ela participasse do próprio cálculo. "
+            "A nuvem inteira abaixo da diagonal é o viés de subestimação das três versões."
+        )
+
+    st.warning(
+        "**V1 e V5 não aparecem no gráfico.** A V1 é legado e saiu do comparador. A V5 de produção "
+        "nunca passou por validação cruzada — o valor amostrado numa estação foi calculado usando "
+        "a própria estação, então compará-la aqui seria compará-la com vantagem.",
+        icon="⚠️",
     )
 
     st.divider()
-    esquerda, direita = st.columns(2)
-    with esquerda:
-        fig("03_comparacao/v1_vs_v2_maps.png")
-        st.caption("V1 e V2 lado a lado.")
-    with direita:
-        fig("03_comparacao/v3_diffs_p99.png")
-        st.caption("O que a V3 mudou em relação à referência, no p99.")
+    st.markdown("#### Mapas de comparação entre versões")
+    figura("03_comparacao/v1_vs_v2_maps.png", "V1 e V2 lado a lado.")
+    figura("03_comparacao/v3_diffs_p99.png", "O que a V3 mudou em relação à referência, no p99.")
 
 
-# ---------------------------------------------------------------- 3. teto
+# ---------------------------------------------------------------- teto
 
-with abas[2]:
-    secao("3", "O teto estrutural", "Por que V2, V3 e V4 nunca reproduzem um extremo local?")
+elif secao_atual == "teto":
+    cabecalho_da_secao("teto")
 
     esquerda, direita = st.columns([3, 2])
     with esquerda:
@@ -177,31 +393,32 @@ gaussiano ou Brown-Resnick.
     with direita:
         st.warning(
             "**A V3 agravou isso por parâmetro.** A escala de dependência espacial real, medida por "
-            "F-madograma sobre a série diária das estações, é de **~10 km** (R²≈0,98). A V3 rodou com "
-            "σ=2,0°, da ordem de **200 km** — cerca de 20× mais larga. Quanto mais larga a janela, "
-            "mais vizinhos discordantes entram na média e mais o extremo se dilui.",
+            "F-madograma sobre a série diária das estações, é de **~10 km** (R²≈0,98). A V3 rodou "
+            "com σ=2,0°, da ordem de **200 km** — cerca de 20× mais larga. Quanto mais larga a "
+            "janela, mais vizinhos discordantes entram na média e mais o extremo se dilui.",
             icon="📏",
         )
 
     st.divider()
-    fig("03_comparacao/dome_200km_p99.png")
-    st.caption(
+    st.markdown("#### O efeito local")
+    figura(
+        "03_comparacao/dome_200km_p99.png",
         "Recorte de 200 km ao redor de uma estação (★). Sem suavização a correção fica concentrada; "
-        "IDW e kernel gaussiano espalham o efeito. Os dois últimos painéis mostram o que cada um mudou."
+        "IDW e kernel gaussiano espalham o efeito. Os dois últimos painéis mostram o que cada um mudou.",
     )
 
-    st.markdown("**O trade-off da largura, explícito:**")
-    fig("03_comparacao/tune_sigma_grid.png")
-    st.caption(
+    st.markdown("#### O trade-off da largura")
+    figura(
+        "03_comparacao/tune_sigma_grid.png",
         "Varredura da largura do kernel. À esquerda, detalhe local e transições abruptas. "
-        "À direita, o campo achata e a informação da estação se dissolve."
+        "À direita, o campo achata e a informação da estação se dissolve.",
     )
 
 
-# ---------------------------------------------------------------- 4. LOOCV
+# ---------------------------------------------------------------- LOOCV
 
-with abas[3]:
-    secao("4", "A régua: LOOCV", "Qual método realmente prevê melhor onde não há estação?")
+elif secao_atual == "loocv":
+    cabecalho_da_secao("loocv")
 
     st.markdown(
         "**Validação cruzada leave-one-station-out:** cada estação é removida, seu valor é predito "
@@ -217,13 +434,9 @@ with abas[3]:
     with esquerda:
         grafico = px.bar(
             recorte.sort_values("rmse", ascending=False),
-            x="rmse",
-            y="method",
-            orientation="h",
-            color="bias",
-            color_continuous_scale="RdBu",
-            color_continuous_midpoint=0,
-            height=420,
+            x="rmse", y="method", orientation="h",
+            color="bias", color_continuous_scale="RdBu", color_continuous_midpoint=0,
+            height=430,
             labels={"rmse": "RMSE (m/s) — menor é melhor", "method": "", "bias": "Viés"},
         )
         grafico.update_layout(margin=dict(l=0, r=0, t=10, b=0))
@@ -238,11 +451,10 @@ with abas[3]:
 
     producao = recorte[recorte["method"].str.startswith(("V2", "V3", "V4"))]
     if not producao.empty:
-        piores = recorte.tail(len(recorte) // 2)["method"].tolist()
         st.error(
             f"**As versões de produção são as piores da lista.** V2, V3 e V4 aparecem com viés de "
-            f"{producao['bias'].min():.1f} a {producao['bias'].max():.1f} m/s — subestimando o extremo "
-            "por larga margem, exatamente o que a seção 3 prevê.",
+            f"{producao['bias'].min():.1f} a {producao['bias'].max():.1f} m/s — subestimando o "
+            "extremo por larga margem, exatamente o que a seção 3 prevê.",
             icon="⚠️",
         )
     melhor = recorte.iloc[0]
@@ -253,62 +465,66 @@ with abas[3]:
         icon="✅",
     )
 
-    with st.expander("Simulação condicional (MSP2) — melhor resultado, em subamostra de 62 estações"):
-        msp2 = carregar("msp2_loocv_fmadograma_p99.csv")
-        erro = msp2["predicted"] - msp2["observed"]
-        coluna_a, coluna_b, coluna_c = st.columns(3)
-        coluna_a.metric("Viés", f"{erro.mean():+.2f} m/s")
-        coluna_b.metric("RMSE", f"{(erro**2).mean()**0.5:.2f} m/s")
-        coluna_c.metric("Correlação", f"{msp2['predicted'].corr(msp2['observed']):.2f}")
-        dispersao = px.scatter(
-            msp2, x="observed", y="predicted", hover_name="codigo_estacao", height=380,
-            labels={"observed": "Observado (m/s)", "predicted": "Predito (m/s)"},
-        )
-        limite = [float(min(msp2["observed"].min(), msp2["predicted"].min())),
-                  float(max(msp2["observed"].max(), msp2["predicted"].max()))]
-        dispersao.add_shape(type="line", x0=limite[0], y0=limite[0], x1=limite[1], y1=limite[1],
-                            line=dict(dash="dash", color="#888", width=1))
-        dispersao.update_layout(margin=dict(l=0, r=0, t=10, b=0))
-        st.plotly_chart(dispersao, width="stretch", config={"responsive": True})
-        st.caption(
-            "Simulação Monte Carlo do processo max-estável completo, condicionando em várias estações "
-            "ao mesmo tempo. É o melhor resultado medido, mas custa minutos por ponto — serve como "
-            "ferramenta de auditoria pontual, não para gerar a grade histórica inteira."
-        )
-
-
-# ---------------------------------------------------------------- 5. destino
-
-with abas[4]:
-    secao("5", "Para onde foi", "O que essa trilha concluiu?")
-
-    st.markdown(
-        """
-Duas conclusões, uma metodológica e uma de rumo.
-
-**A interpolação por combinação convexa tem teto.** Recalibrar o kernel (V4) ou trocar o peso (V3)
-não resolve, porque o limite é do mecanismo, não do parâmetro. Os métodos que se saíram melhor são
-justamente os que saem dessa família: mirar o quantil diretamente, adaptar o expoente localmente,
-ou simular o processo extremal.
-
-**O rumo do projeto passou a ser a trilha de IA.** A base de IA desenvolvida em paralelo foi
-comparada contra a interpolação em pé de igualdade — mesmo recorte espacial, mesmo período fora da
-amostra de treino, e com validação cruzada real do lado da interpolação — e levou vantagem. É por
-isso que o trabalho seguiu por lá.
-        """
+    st.divider()
+    st.markdown("#### Simulação condicional (MSP2) — melhor resultado, em subamostra de 62 estações")
+    msp2 = carregar("msp2_loocv_fmadograma_p99.csv")
+    erro = msp2["predicted"] - msp2["observed"]
+    colunas = st.columns(3)
+    colunas[0].metric("Viés", f"{erro.mean():+.2f} m/s")
+    colunas[1].metric("RMSE", f"{(erro**2).mean()**0.5:.2f} m/s")
+    colunas[2].metric("Correlação", f"{msp2['predicted'].corr(msp2['observed']):.2f}")
+    dispersao = px.scatter(
+        msp2, x="observed", y="predicted", hover_name="codigo_estacao", height=400,
+        labels={"observed": "Observado (m/s)", "predicted": "Predito (m/s)"},
     )
+    limite = [float(min(msp2["observed"].min(), msp2["predicted"].min())),
+              float(max(msp2["observed"].max(), msp2["predicted"].max()))]
+    dispersao.add_shape(type="line", x0=limite[0], y0=limite[0], x1=limite[1], y1=limite[1],
+                        line=dict(dash="dash", color="#888", width=1))
+    dispersao.update_layout(margin=dict(l=0, r=0, t=10, b=0))
+    st.plotly_chart(dispersao, width="stretch", config={"responsive": True})
     st.caption(
-        "A comparação em pé de igualdade é deliberada: a versão de produção usa a rede nacional inteira "
-        "e o histórico completo, vantagem de informação que a base de IA não tinha. Por isso a régua "
-        "usou uma versão restrita ao mesmo domínio e período."
+        "Simulação Monte Carlo do processo max-estável completo, condicionando em várias estações "
+        "ao mesmo tempo. É o melhor resultado medido, mas custa minutos por ponto — serve como "
+        "ferramenta de auditoria pontual, não para gerar a grade histórica inteira."
+    )
+
+
+# ---------------------------------------------------------------- destino
+
+elif secao_atual == "destino":
+    cabecalho_da_secao("destino")
+
+    esquerda, direita = st.columns(2)
+    with esquerda, st.container(border=True):
+        st.markdown("##### A conclusão metodológica")
+        st.markdown(
+            "**A interpolação por combinação convexa tem teto.** Recalibrar o kernel (V4) ou trocar "
+            "o peso (V3) não resolve, porque o limite é do mecanismo, não do parâmetro. Os métodos "
+            "que se saíram melhor são justamente os que saem dessa família: mirar o quantil "
+            "diretamente, adaptar o expoente localmente, ou simular o processo extremal."
+        )
+    with direita, st.container(border=True):
+        st.markdown("##### A decisão de rumo")
+        st.markdown(
+            "**O projeto passou a seguir pela trilha de IA.** A base de IA desenvolvida em paralelo "
+            "foi comparada contra a interpolação em pé de igualdade — mesmo recorte espacial, mesmo "
+            "período fora da amostra de treino, e com validação cruzada real do lado da interpolação "
+            "— e levou vantagem."
+        )
+
+    st.caption(
+        "A comparação em pé de igualdade é deliberada: a versão de produção usa a rede nacional "
+        "inteira e o histórico completo, vantagem de informação que a base de IA não tinha. Por "
+        "isso a régua usou uma versão restrita ao mesmo domínio e período."
     )
 
 
 # ---------------------------------------------------------------- acervo
 
-with abas[5]:
-    st.subheader("Acervo")
-    st.caption("Figuras produzidas pelo pipeline, inclusive as que não entraram no percurso acima.")
+elif secao_atual == "acervo":
+    st.subheader("📚 Acervo")
+    st.caption("Figuras produzidas pelo pipeline, inclusive as que não entraram no percurso.")
 
     grupos = {
         "Comparação entre versões e ajuste": sorted((FIGURAS / "03_comparacao").glob("*.png")),
@@ -325,7 +541,4 @@ with abas[5]:
     escolhido = st.selectbox(
         "Grupo", list(grupos), format_func=lambda t: f"{t} ({len(grupos[t])})", key="acervo_grupo"
     )
-    arquivos = grupos[escolhido]
-    for inicio in range(0, len(arquivos), 3):
-        for coluna, arquivo in zip(st.columns(3), arquivos[inicio : inicio + 3]):
-            coluna.image(str(arquivo), caption=arquivo.stem.replace("_", " "), width="stretch")
+    grade_de_figuras(grupos[escolhido])
